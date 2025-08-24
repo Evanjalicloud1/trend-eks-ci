@@ -9,18 +9,6 @@ pipeline {
             }
         }
 
-        stage('Build React') {
-            agent {
-                docker {
-                    image 'node:18'   // Use official Node.js 18 Docker image
-                }
-            }
-            steps {
-                sh 'npm install'
-                sh 'npm run build'
-            }
-        }
-
         stage('Docker Build & Push') {
             steps {
                 script {
