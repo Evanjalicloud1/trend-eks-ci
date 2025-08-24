@@ -16,6 +16,12 @@ pipeline {
         }
 
         stage('Build React') {
+            agent {
+                docker {
+                    image 'node:18'   // ✅ Run build in Node.js container
+                    args '-v $WORKSPACE:/app -w /app'
+                }
+            }
             steps {
                 sh '''
                 echo "Installing dependencies..."
