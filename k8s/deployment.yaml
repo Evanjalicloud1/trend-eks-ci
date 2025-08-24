@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: DOCKERHUB_REPO_PLACEHOLDER:latest
+          image: evanjali1468/trend:latest   # Jenkins will overwrite with new image tag
           ports:
             - containerPort: 3000
           resources:
