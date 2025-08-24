@@ -1,54 +1,52 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    AWS_REGION        = 'ap-south-1'
-    EKS_CLUSTER_NAME  = 'trend-eks'
-    DOCKERHUB_REPO    = 'evanjali1468/trend'
-    IMAGE_TAG         = "${env.BUILD_NUMBER}"
-  }
-
-  options { timestamps() }
-  triggers { githubPush() }
-
-  stages {
-    stage('Checkout') {
-      steps {
-        git branch: 'main',
-            credentialsId: 'github-ssh',
-            url: 'git@github.com:Evanjalicloud1/Trend.git'
-      }
+    environment {
+        DOCKER_HUB_USER = 'evanjali1468'
+        IMAGE_NAME = 'trend-app'
     }
 
-    stage('Build React') {
-      steps {
-        sh 'npm ci --no-audit --progress=false && npm run build'
-      }
-    }
-
-    stage('Docker Build & Push') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          sh '''
-          echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-          docker build -t $DOCKERHUB_REPO:$IMAGE_TAG -t $DOCKERHUB_REPO:latest .
-          docker push $DOCKERHUB_REPO:$IMAGE_TAG
-          docker push $DOCKERHUB_REPO:latest
-          '''
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git',
+                    credentialsId: 'github-ssh'
+            }
         }
-      }
-    }
 
-    stage('Deploy to EKS') {
-      steps {
-        sh '''
-        aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
-        kubectl apply -f k8s/deployment.yaml
-        kubectl apply -f k8s/service.yaml
-        kubectl set image deployment/trend-web web=$DOCKERHUB_REPO:$IMAGE_TAG --record || true
-        kubectl rollout status deployment/trend-web --timeout=120s
-        '''
-      }
+        stage('Build React') {
+            steps {
+                sh '''
+                echo "Installing dependencies..."
+                npm install
+                echo "Building React app..."
+                npm run build
+                '''
+            }
+        }
+
+        stage('Docker Build & Push') {
+            steps {
+                withDockerRegistry([ credentialsId: 'docker-hub', url: '' ]) {
+                    sh '''
+                    echo "Building Docker image..."
+                    docker build -t $DOCKER_HUB_USER/$IMAGE_NAME:latest .
+                    echo "Pushing Docker image to DockerHub..."
+                    docker push $DOCKER_HUB_USER/$IMAGE_NAME:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                sh '''
+                echo "Deploying to EKS..."
+                kubectl apply -f k8s/deployment.yaml
+                kubectl apply -f k8s/service.yaml
+                '''
+            }
+        }
     }
-  }
 }
