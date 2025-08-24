@@ -1,17 +1,22 @@
- pipeline {
+pipeline {
   agent any
+
   environment {
     AWS_REGION        = 'ap-south-1'
     EKS_CLUSTER_NAME  = 'trend-eks'
     DOCKERHUB_REPO    = 'evanjali1468/trend'
     IMAGE_TAG         = "${env.BUILD_NUMBER}"
   }
+
   options { timestamps() }
   triggers { githubPush() }
+
   stages {
     stage('Checkout') {
       steps {
-        checkout scm
+        git branch: 'main',
+            credentialsId: 'github-ssh',
+            url: 'git@github.com:Evanjalicloud1/Trend.git'
       }
     }
 
