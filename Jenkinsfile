@@ -1,11 +1,5 @@
 pipeline {
     agent any
-
-    environment {
-        DOCKER_HUB_USER = 'evanjali1468'
-        IMAGE_NAME = 'trend-app'
-    }
-
     stages {
         stage('Checkout') {
             steps {
@@ -18,40 +12,30 @@ pipeline {
         stage('Build React') {
             agent {
                 docker {
-                    image 'node:18'   // ✅ Run build in Node.js container
-                    args '-v $WORKSPACE:/app -w /app'
+                    image 'node:18'   // Use official Node.js 18 Docker image
                 }
             }
             steps {
-                sh '''
-                echo "Installing dependencies..."
-                npm install
-                echo "Building React app..."
-                npm run build
-                '''
+                sh 'npm install'
+                sh 'npm run build'
             }
         }
 
         stage('Docker Build & Push') {
             steps {
-                withDockerRegistry([ credentialsId: 'docker-hub', url: '' ]) {
-                    sh '''
-                    echo "Building Docker image..."
-                    docker build -t $DOCKER_HUB_USER/$IMAGE_NAME:latest .
-                    echo "Pushing Docker image to DockerHub..."
-                    docker push $DOCKER_HUB_USER/$IMAGE_NAME:latest
-                    '''
+                script {
+                    docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-credentials') {
+                        def customImage = docker.build("evanjali1468/trend-app:latest")
+                        customImage.push()
+                    }
                 }
             }
         }
 
         stage('Deploy to EKS') {
             steps {
-                sh '''
-                echo "Deploying to EKS..."
-                kubectl apply -f k8s/deployment.yaml
-                kubectl apply -f k8s/service.yaml
-                '''
+                sh 'kubectl apply -f k8s/deployment.yaml'
+                sh 'kubectl apply -f k8s/service.yaml'
             }
         }
     }
