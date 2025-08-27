@@ -2,16 +2,13 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-        DOCKERHUB_REPO = "evanjali1468/trend-app"
+        DOCKERHUB_REPO = "evanjali1468/trend-app"   // 🔹 Replace with your DockerHub repo
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main',
-                    credentialsId: 'github-ssh',
-                    url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git'
+                git credentialsId: 'github-ssh', url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git', branch: 'main'
             }
         }
 
@@ -25,10 +22,9 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    docker.withRegistry('https://index.docker.io/v1/', "${DOCKERHUB_CREDENTIALS}") {
-                        def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
+                    docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-credentials') {  // 🔹 Use your Jenkins credential ID
+                        def app = docker.build("${DOCKERHUB_REPO}:latest")
                         app.push()
-                        app.push("latest")
                     }
                 }
             }
@@ -37,9 +33,20 @@ pipeline {
         stage('Deploy to EKS') {
             steps {
                 sh '''
-                aws eks update-kubeconfig --region us-east-1 --name trend-eks
-                kubectl set image deployment/trend-app trend-app=evanjali1468/trend-app:latest -n default
-                kubectl rollout status deployment/trend-app -n default
+                echo "🔹 Deploying to EKS..."
+                kubectl apply -f k8s/deployment.yaml
+                kubectl apply -f k8s/service.yaml
+                '''
+            }
+        }
+
+        stage('Get LoadBalancer URL') {
+            steps {
+                sh '''
+                echo "🔹 Waiting for LoadBalancer external IP..."
+                kubectl get svc trend-service -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" --watch-only &
+                sleep 30
+                kubectl get svc trend-service -o wide
                 '''
             }
         }
