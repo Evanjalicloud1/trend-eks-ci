@@ -1,20 +1,34 @@
 pipeline {
     agent any
+
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+        DOCKERHUB_REPO = "your-dockerhub-username/trend-app"
+    }
+
     stages {
         stage('Checkout') {
             steps {
                 git branch: 'main',
-                    url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git',
-                    credentialsId: 'github-ssh'
+                    credentialsId: 'github-ssh',
+                    url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git'
+            }
+        }
+
+        stage('Build React App') {
+            steps {
+                sh 'npm install'
+                sh 'npm run build'
             }
         }
 
         stage('Docker Build & Push') {
             steps {
                 script {
-                    docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-credentials') {
-                        def customImage = docker.build("evanjali1468/trend-app:latest")
-                        customImage.push()
+                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                        def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
+                        app.push()
+                        app.push("latest")
                     }
                 }
             }
@@ -22,8 +36,11 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                sh 'kubectl apply -f k8s/deployment.yaml'
-                sh 'kubectl apply -f k8s/service.yaml'
+                sh '''
+                aws eks update-kubeconfig --region us-east-1 --name trend-eks
+                kubectl apply -f k8s/deployment.yaml
+                kubectl apply -f k8s/service.yaml
+                '''
             }
         }
     }
