@@ -25,7 +25,7 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    docker.withRegistry('', dockerhub_credentials) {
+                    docker.withRegistry('', dockerhub-credentials) {
                         def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
                         app.push()
                         app.push("latest")
