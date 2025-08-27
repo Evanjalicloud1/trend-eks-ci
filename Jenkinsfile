@@ -31,14 +31,17 @@ pipeline {
         }
 
         stage('Deploy to EKS') {
-            steps {
-                sh '''
-                echo "🔹 Deploying to EKS..."
-                kubectl apply -f k8s/deployment.yaml
-                kubectl apply -f k8s/service.yaml
-                '''
-            }
+    steps {
+        withAWS(credentials: 'aws-eks-creds', region: 'ap-south-1') {
+            sh '''
+            aws eks update-kubeconfig --region ap-south-1 --name trend-eks
+            kubectl apply -f k8s/deployment.yaml --validate=false
+            kubectl apply -f k8s/service.yaml --validate=false
+            '''
         }
+    }
+}
+
 
         stage('Get LoadBalancer URL') {
             steps {
