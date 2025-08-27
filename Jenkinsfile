@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
-        DOCKERHUB_REPO = "your-dockerhub-username/trend-app"
+        DOCKERHUB_REPO = "evanjali1468/trend-app"
     }
 
     stages {
@@ -25,7 +25,7 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                    docker.withRegistry('', dockerhub_credentials) {
                         def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
                         app.push()
                         app.push("latest")
