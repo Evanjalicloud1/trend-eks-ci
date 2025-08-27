@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: trend-app
+  name: trend-app-deployment
   labels:
     app: trend-app
 spec:
@@ -15,8 +15,7 @@ spec:
         app: trend-app
     spec:
       containers:
-        - name: trend-app
-          image: evanjali1468/trend-app:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 3000
+      - name: trend-app
+        image: 767828768641.dkr.ecr.ap-south-1.amazonaws.com/trend-app:latest
+        ports:
+        - containerPort: 80
