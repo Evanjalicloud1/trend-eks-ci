@@ -2,8 +2,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: trend-app-service
-  labels:
-    app: trend-app
 spec:
   type: LoadBalancer
   selector:
@@ -11,5 +9,6 @@ spec:
   ports:
     - protocol: TCP
       port: 80
-      targetPort: 3000
+      targetPort: 80
+
 
