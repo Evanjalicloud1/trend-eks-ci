@@ -2,13 +2,15 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_REPO = "evanjali1468/trend-app"   // 🔹 Replace with your DockerHub repo
+        DOCKERHUB_REPO = "evanjali1468/trend-app"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git credentialsId: 'github-ssh', url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git', branch: 'main'
+                git branch: 'main',
+                    credentialsId: 'github-ssh',
+                    url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git'
             }
         }
 
@@ -22,35 +24,33 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-credentials') {  // 🔹 Use your Jenkins credential ID
-                        def app = docker.build("${DOCKERHUB_REPO}:latest")
+                    docker.withRegistry('', 'dockerhub-credentials') {
+                        def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
                         app.push()
+                        app.push("latest")
                     }
                 }
             }
         }
 
         stage('Deploy to EKS') {
-    steps {
-        withAWS(credentials: 'aws-eks-creds', region: 'ap-south-1') {
-            sh '''
-            aws eks update-kubeconfig --region ap-south-1 --name trend-eks
-            kubectl apply -f k8s/deployment.yaml --validate=false
-            kubectl apply -f k8s/service.yaml --validate=false
-            '''
-        }
-    }
-}
-
-
-        stage('Get LoadBalancer URL') {
             steps {
-                sh '''
-                echo "🔹 Waiting for LoadBalancer external IP..."
-                kubectl get svc trend-service -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" --watch-only &
-                sleep 30
-                kubectl get svc trend-service -o wide
-                '''
+                withCredentials([usernamePassword(credentialsId: 'aws-eks-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                        # Configure AWS CLI dynamically
+                        mkdir -p ~/.aws
+                        cat > ~/.aws/credentials <<EOL
+[default]
+aws_access_key_id=$AWS_ACCESS_KEY_ID
+aws_secret_access_key=$AWS_SECRET_ACCESS_KEY
+EOL
+
+                        # Deploy to EKS
+                        aws eks update-kubeconfig --region ap-south-1 --name trend-eks
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
+                    '''
+                }
             }
         }
     }
