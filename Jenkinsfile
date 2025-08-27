@@ -25,7 +25,7 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    docker.withRegistry('', dockerhub-credentials) {
+                    docker.withRegistry('https://index.docker.io/v1/', "${DOCKERHUB_CREDENTIALS}") {
                         def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
                         app.push()
                         app.push("latest")
@@ -38,8 +38,8 @@ pipeline {
             steps {
                 sh '''
                 aws eks update-kubeconfig --region us-east-1 --name trend-eks
-                kubectl apply -f k8s/deployment.yaml
-                kubectl apply -f k8s/service.yaml
+                kubectl set image deployment/trend-app trend-app=evanjali1468/trend-app:latest -n default
+                kubectl rollout status deployment/trend-app -n default
                 '''
             }
         }
