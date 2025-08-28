@@ -1,8 +1,12 @@
+# 1) Overwrite the Deployment with working mounts + securityContext
+cat > k8s/deployment.yaml <<'YAML'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: trend-app
   namespace: trend-app
+  labels:
+    app: trend-app
 spec:
   replicas: 2
   selector:
@@ -15,10 +19,25 @@ spec:
     spec:
       containers:
         - name: trend-app
-          image: evanjali1468/trend-app:latest   # ✅ your pushed image
-          imagePullPolicy: Always               # ✅ always pull fresh image
+          image: docker.io/evanjali1468/trend-app:latest
+          imagePullPolicy: Always
           ports:
-            - containerPort: 80
+            - name: http
+              containerPort: 80
+          # nginx needs to write under /var/cache/nginx and /var/run
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["CHOWN"]  # ensure chown during entrypoint works
           resources:
             requests:
               cpu: 100m
@@ -29,12 +48,29 @@ spec:
           livenessProbe:
             httpGet:
               path: /
-              port: 80
+              port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /
-              port: 80
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+YAML
+
+# 2) Apply, wait, then print the LB URL
+kubectl -n trend-app apply -f k8s/deployment.yaml \
+&& kubectl -n trend-app rollout status deploy/trend-app --timeout=180s \
+&& H=$(kubectl -n trend-app get svc trend-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}') \
+&& echo "http://$H:3000" \
+&& curl -I "http://$H:3000"
