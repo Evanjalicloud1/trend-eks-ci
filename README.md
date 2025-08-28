@@ -1,70 +1,61 @@
-# Getting Started with Create React App
+Trend App – CI/CD on AWS EKS with Jenkins, Docker, and Grafana
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This project demonstrates a complete CI/CD pipeline for deploying a React application on AWS EKS (Elastic Kubernetes Service) using Jenkins, Docker, and Kubernetes, with monitoring via Grafana + Prometheus.
+Architecture Workflow
 
-## Available Scripts
+Developer commits code → GitHub repo.
 
-In the project directory, you can run:
+Jenkins pipeline pulls code → builds React app → creates Docker image → pushes to Docker Hub.
 
-### `npm start`
+Jenkins deploys to AWS EKS cluster via kubectl.
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+Kubernetes Deployment + Service exposes the app via AWS LoadBalancer.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+Grafana + Prometheus monitor the cluster and app.
 
-### `npm test`
+Prerequisites
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+AWS Account with IAM permissions for EKS, EC2, and ELB.
 
-### `npm run build`
+EC2 Instance (Ubuntu) for Jenkins server.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+Installed on Jenkins server:
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+Jenkins + required plugins (Git, Docker, Kubernetes, Pipeline).
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+Docker & Docker Hub credentials.
 
-### `npm run eject`
+AWS CLI + kubectl + eksctl + Helm.
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+GitHub SSH Key added to Jenkins credentials (github-ssh).
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+Setup Instructions
+1️.Jenkins Setup
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+Install Jenkins on EC2 (sudo apt install jenkins).
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+Install required plugins: Git, Pipeline, Docker Pipeline, Kubernetes CLI, SSH Agent.
 
-## Learn More
+Add credentials in Jenkins:
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+github-ssh → GitHub SSH key.
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+dockerhub-credentials → Docker Hub username/password.
 
-### Code Splitting
+aws-eks-creds → AWS Access Key ID / Secret.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+2.Docker Build & Push
 
-### Analyzing the Bundle Size
+Dockerfile used:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+FROM node:18-alpine as build
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
 
-### Making a Progressive Web App
+FROM nginx:alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/build /usr/share/nginx/html
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
