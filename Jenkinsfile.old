@@ -2,10 +2,10 @@ pipeline {
   agent any
 
   environment {
-    DOCKERHUB_REPO = "evanjali1468/trend-app"
-    AWS_REGION     = "ap-south-1"
-    EKS_CLUSTER    = "trend-eks"   // override via Discover stage if needed
-    K8S_DIR        = "k8s"
+    DOCKERHUB_REPO = 'evanjali1468/trend-app'
+    AWS_REGION     = 'ap-south-1'
+    EKS_CLUSTER    = 'trend-eks'
+    KUBE_NS        = 'trend-app'
   }
 
   stages {
@@ -20,6 +20,7 @@ pipeline {
     stage('Build React App') {
       steps {
         sh '''
+          set -e
           npm install
           npm run build
         '''
@@ -30,41 +31,9 @@ pipeline {
       steps {
         script {
           docker.withRegistry('', 'dockerhub-credentials') {
-            def tag = env.BUILD_NUMBER
-            sh """
-              docker build -t ${DOCKERHUB_REPO}:${tag} .
-              docker push ${DOCKERHUB_REPO}:${tag}
-              docker tag  ${DOCKERHUB_REPO}:${tag} ${DOCKERHUB_REPO}:latest
-              docker push ${DOCKERHUB_REPO}:latest
-            """
-          }
-        }
-      }
-    }
-
-    stage('Discover EKS Cluster (optional)') {
-      environment { AWS_DEFAULT_REGION = "${AWS_REGION}" }
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'aws-eks-creds',
-          usernameVariable: 'AWS_ACCESS_KEY_ID',
-          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-        )]) {
-          script {
-            def discovered = sh(script: '''
-              set -e
-              docker run --rm \
-                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION \
-                amazon/aws-cli:latest \
-                eks list-clusters --output text --query 'clusters[]' \
-              | tr '\\t' '\\n' | head -n 1
-            ''', returnStdout: true).trim()
-            if (discovered) {
-              env.EKS_CLUSTER = discovered
-              echo "Auto-discovered EKS cluster: ${env.EKS_CLUSTER}"
-            } else {
-              echo "No cluster discovered; using EKS_CLUSTER='${env.EKS_CLUSTER}'"
-            }
+            def img = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
+            img.push()
+            img.push('latest')
           }
         }
       }
@@ -78,96 +47,30 @@ pipeline {
           passwordVariable: 'AWS_SECRET_ACCESS_KEY'
         )]) {
           sh '''
-            set -eu
-            KUBECONFIG_PATH="$WORKSPACE/kubeconfig"
+            set -e
+            # kubeconfig for this agent
+            aws eks --region "$AWS_REGION" update-kubeconfig --name "$EKS_CLUSTER"
 
-            echo ">> Generate kubeconfig via containerized AWS CLI"
-            docker run --rm \
-              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-              -e AWS_DEFAULT_REGION=${AWS_REGION} \
-              -v "$WORKSPACE:/work" -w /work \
-              amazon/aws-cli:latest \
-              eks update-kubeconfig \
-                --name "${EKS_CLUSTER}" \
-                --region "${AWS_REGION}" \
-                --kubeconfig /work/kubeconfig
+            # make sure namespace exists
+            kubectl get ns "$KUBE_NS" >/dev/null 2>&1 || kubectl create ns "$KUBE_NS"
 
-            echo ">> Sanity check kubectl access"
-            docker run --rm \
-              -e KUBECONFIG=/work/kubeconfig \
-              -v "$WORKSPACE:/work" -w /work \
-              bitnami/kubectl:1.29 \
-              kubectl get nodes
-
-            echo ">> Apply manifests"
-            docker run --rm \
-              -e KUBECONFIG=/work/kubeconfig \
-              -v "$WORKSPACE:/work" -w /work \
-              bitnami/kubectl:1.29 \
-              kubectl apply -f ${K8S_DIR}/
-
-            echo ">> Wait for Service external hostname"
-            for i in $(seq 1 30); do
-              ELB_HOST=$(docker run --rm -e KUBECONFIG=/work/kubeconfig -v "$WORKSPACE:/work" -w /work \
-                bitnami/kubectl:1.29 \
-                sh -c "kubectl get svc trend-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'" || true)
-              if [ -n "$ELB_HOST" ]; then
-                echo "EKS LoadBalancer Hostname: $ELB_HOST"
-                break
-              fi
-              echo "waiting for LoadBalancer... ($i/30)"
-              sleep 10
-            done
-          '''
-        }
-      }
-    }
-
-    stage('Get LoadBalancer ARN') {
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'aws-eks-creds',
-          usernameVariable: 'AWS_ACCESS_KEY_ID',
-          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-        )]) {
-          sh '''
-            set -eu
-
-            ELB_HOST=$(docker run --rm -e KUBECONFIG=/work/kubeconfig -v "$WORKSPACE:/work" -w /work \
-              bitnami/kubectl:1.29 \
-              sh -c "kubectl get svc trend-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'" || true)
-
-            if [ -z "${ELB_HOST}" ]; then
-              echo "LoadBalancer hostname not ready yet."
-              exit 0
-            fi
-
-            echo "LB Hostname: ${ELB_HOST}"
-
-            # Try ELBv2 (ALB/NLB)
-            ARN=$(docker run --rm \
-              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-              -e AWS_DEFAULT_REGION=${AWS_REGION} \
-              amazon/aws-cli:latest \
-              elbv2 describe-load-balancers --query \
-              "LoadBalancers[?DNSName=='${ELB_HOST}'].LoadBalancerArn | [0]" --output text 2>/dev/null || true)
-
-            if [ -n "${ARN}" ] && [ "${ARN}" != "None" ]; then
-              echo "ELBv2 ARN: ${ARN}"
+            # try rolling update; if deploy doesn't exist yet, create from file
+            if kubectl -n "$KUBE_NS" get deploy/trend-app >/dev/null 2>&1; then
+              kubectl -n "$KUBE_NS" set image deploy/trend-app trend-app="${DOCKERHUB_REPO}:${BUILD_NUMBER}"
             else
-              # Classic ELB returns a name, not ARN
-              NAME=$(docker run --rm \
-                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-                -e AWS_DEFAULT_REGION=${AWS_REGION} \
-                amazon/aws-cli:latest \
-                elb describe-load-balancers --query \
-                "LoadBalancerDescriptions[?DNSName=='${ELB_HOST}'].LoadBalancerName | [0]" --output text 2>/dev/null || true)
-              if [ -n "${NAME}" ] && [ "${NAME}" != "None" ]; then
-                echo "Classic ELB Name: ${NAME}"
-              else
-                echo "Could not resolve LoadBalancer ARN/Name yet."
-              fi
+              kubectl -n "$KUBE_NS" apply -f k8s/deployment.yaml
+              kubectl -n "$KUBE_NS" set image deploy/trend-app trend-app="${DOCKERHUB_REPO}:${BUILD_NUMBER}"
             fi
+
+            # (re)apply service to be safe/idempotent
+            kubectl -n "$KUBE_NS" apply -f k8s/service.yaml
+
+            # wait until rollout completes
+            kubectl -n "$KUBE_NS" rollout status deploy/trend-app
+
+            # print the LB URL
+            HOST=$(kubectl -n "$KUBE_NS" get svc trend-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            echo "EKS LoadBalancer URL: http://$HOST:3000"
           '''
         }
       }
@@ -176,7 +79,7 @@ pipeline {
 
   post {
     always {
-      echo "Pipeline finished."
+      echo 'Pipeline finished.'
     }
   }
 }
