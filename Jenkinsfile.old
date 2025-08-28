@@ -1,74 +1,184 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        DOCKERHUB_REPO = "evanjali1468/trend-app"
-        AWS_REGION = "ap-south-1"
-        EKS_CLUSTER = "trend-eks"
+  environment {
+    DOCKERHUB_REPO = "evanjali1468/trend-app"
+    AWS_REGION     = "ap-south-1"
+    EKS_CLUSTER    = "trend-eks"            // set to your real cluster name
+    K8S_DIR        = "k8s"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        git branch: 'main',
+            credentialsId: 'github-ssh',
+            url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git'
+      }
     }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    credentialsId: 'github-ssh',
-                    url: 'git@github.com:Evanjalicloud1/trend-eks-ci.git'
-            }
-        }
-
-        stage('Build React App') {
-            steps {
-                sh 'npm install'
-                sh 'npm run build'
-            }
-        }
-
-        stage('Docker Build & Push') {
-            steps {
-                script {
-                    docker.withRegistry('', 'dockerhub-credentials') {
-                        def app = docker.build("${DOCKERHUB_REPO}:${env.BUILD_NUMBER}")
-                        app.push()
-                        app.push("latest")
-                    }
-                }
-            }
-        }
-
-        stage('Deploy to EKS') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'aws-eks-creds', 
-                                                 usernameVariable: 'AWS_ACCESS_KEY_ID', 
-                                                 passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-                    sh '''
-                        # Configure AWS CLI dynamically
-                        mkdir -p ~/.aws
-                        cat > ~/.aws/credentials <<EOL
-[default]
-aws_access_key_id=$AWS_ACCESS_KEY_ID
-aws_secret_access_key=$AWS_SECRET_ACCESS_KEY
-EOL
-                        aws configure set region $AWS_REGION
-
-                        # Update kubeconfig
-                        aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER
-
-                        # Deploy manifests
-                        kubectl apply -f k8s/deployment.yaml
-                        kubectl apply -f k8s/service.yaml
-
-                        # Print LoadBalancer URL dynamically
-                        echo "EKS LoadBalancer URL:"
-                        kubectl get svc $(kubectl get svc -o jsonpath='{.items[0].metadata.name}') -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-                    '''
-                }
-            }
-        }
+    stage('Build React App') {
+      steps {
+        sh '''
+          npm install
+          npm run build
+        '''
+      }
     }
 
-    post {
-        always {
-            echo "Pipeline finished."
+    stage('Docker Build & Push') {
+      steps {
+        script {
+          docker.withRegistry('', 'dockerhub-credentials') {
+            def imageTag = "${env.BUILD_NUMBER}"
+            sh """
+              docker build -t ${DOCKERHUB_REPO}:${imageTag} .
+              docker push ${DOCKERHUB_REPO}:${imageTag}
+              docker tag  ${DOCKERHUB_REPO}:${imageTag} ${DOCKERHUB_REPO}:latest
+              docker push ${DOCKERHUB_REPO}:latest
+            """
+          }
         }
+      }
     }
+
+    // Optional: Discover EKS cluster automatically if you don't know the name.
+    // This will override EKS_CLUSTER if a cluster is found.
+    stage('Discover EKS Cluster (optional)') {
+      environment { AWS_DEFAULT_REGION = "${AWS_REGION}" }
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'aws-eks-creds',
+          usernameVariable: 'AWS_ACCESS_KEY_ID',
+          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+        )]) {
+          script {
+            def discovered = sh(script: '''
+              set -e
+              docker run --rm \
+                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+                -e AWS_DEFAULT_REGION \
+                amazon/aws-cli:2 \
+                eks list-clusters --query 'clusters[]' --output text | tr "\\t" "\\n" | head -n 1
+            ''', returnStdout: true).trim()
+            if (discovered) {
+              env.EKS_CLUSTER = discovered
+              echo "Auto-discovered EKS cluster: ${env.EKS_CLUSTER}"
+            } else {
+              echo "No cluster discovered; using EKS_CLUSTER='${env.EKS_CLUSTER}'"
+            }
+          }
+        }
+      }
+    }
+
+    stage('Deploy to EKS') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'aws-eks-creds',
+          usernameVariable: 'AWS_ACCESS_KEY_ID',
+          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+        )]) {
+          sh '''
+            set -euo pipefail
+            KUBECONFIG_PATH="$WORKSPACE/kubeconfig"
+
+            echo ">> Generate kubeconfig via containerized AWS CLI"
+            docker run --rm \
+              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+              -e AWS_DEFAULT_REGION=${AWS_REGION} \
+              -v "$WORKSPACE:/work" -w /work \
+              amazon/aws-cli:2 \
+              eks update-kubeconfig \
+                --name "${EKS_CLUSTER}" \
+                --region "${AWS_REGION}" \
+                --kubeconfig /work/kubeconfig
+
+            echo ">> Sanity check kubectl access"
+            docker run --rm \
+              -e KUBECONFIG=/work/kubeconfig \
+              -v "$WORKSPACE:/work" -w /work \
+              bitnami/kubectl:1.29 \
+              kubectl get nodes
+
+            echo ">> Apply manifests"
+            docker run --rm \
+              -e KUBECONFIG=/work/kubeconfig \
+              -v "$WORKSPACE:/work" -w /work \
+              bitnami/kubectl:1.29 \
+              kubectl apply -f ${K8S_DIR}/
+
+            echo ">> Wait for Service external hostname"
+            for i in $(seq 1 30); do
+              ELB_HOST=$(docker run --rm -e KUBECONFIG=/work/kubeconfig -v "$WORKSPACE:/work" -w /work \
+                bitnami/kubectl:1.29 \
+                sh -c "kubectl get svc trend-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'" || true)
+              if [ -n "$ELB_HOST" ]; then
+                echo "EKS LoadBalancer Hostname: $ELB_HOST"
+                break
+              fi
+              echo "waiting for LoadBalancer... ($i/30)"
+              sleep 10
+            done
+          '''
+        }
+      }
+    }
+
+    stage('Get LoadBalancer ARN') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'aws-eks-creds',
+          usernameVariable: 'AWS_ACCESS_KEY_ID',
+          passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+        )]) {
+          sh '''
+            set -euo pipefail
+
+            ELB_HOST=$(docker run --rm -e KUBECONFIG=/work/kubeconfig -v "$WORKSPACE:/work" -w /work \
+              bitnami/kubectl:1.29 \
+              sh -c "kubectl get svc trend-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'" || true)
+
+            if [ -z "${ELB_HOST}" ]; then
+              echo "LoadBalancer hostname not ready yet."
+              exit 0
+            fi
+
+            echo "LB Hostname: ${ELB_HOST}"
+
+            # Try ELBv2 (ALB/NLB)
+            ARN=$(docker run --rm \
+              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+              -e AWS_DEFAULT_REGION=${AWS_REGION} \
+              amazon/aws-cli:2 \
+              elbv2 describe-load-balancers --query \
+              "LoadBalancers[?DNSName=='${ELB_HOST}'].LoadBalancerArn | [0]" --output text 2>/dev/null || true)
+
+            if [ -n "${ARN}" ] && [ "${ARN}" != "None" ]; then
+              echo "ELBv2 ARN: ${ARN}"
+            else
+              # Classic ELB returns a name rather than ARN
+              NAME=$(docker run --rm \
+                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+                -e AWS_DEFAULT_REGION=${AWS_REGION} \
+                amazon/aws-cli:2 \
+                elb describe-load-balancers --query \
+                "LoadBalancerDescriptions[?DNSName=='${ELB_HOST}'].LoadBalancerName | [0]" --output text 2>/dev/null || true)
+              if [ -n "${NAME}" ] && [ "${NAME}" != "None" ]; then
+                echo "Classic ELB Name: ${NAME}"
+              else
+                echo "Could not resolve LoadBalancer ARN/Name yet."
+              fi
+            fi
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      echo "Pipeline finished."
+    }
+  }
 }
